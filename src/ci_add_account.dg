@@ -32,11 +32,26 @@ info "CI: Starting account creation for deal " + dealId;
 dealName = deal.get("Deal_Name");
 bankNumber = deal.get("Bank_Number");
 
+if (dealName == null || dealName == "")
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Deal_Name"});
+    return;
+end if;
+
+if (bankNumber == null || bankNumber == "")
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Bank_Number"});
+    return;
+end if;
+
 info "CI: Deal Name = " + dealName;
 info "CI: Bank Number = " + bankNumber;
 
 // Get parent account billing address
-accountId = deal.get("Account_Name").get("id");
+accountLookup = deal.get("Account_Name");
+if (accountLookup == null)
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Deal has no parent Account"});
+    return;
+end if;
+accountId = accountLookup.get("id");
 account = zoho.crm.getRecordById("Accounts", accountId);
 
 street  = ifnull(account.get("Billing_Street"), "");
@@ -65,6 +80,11 @@ defaultSig        = zoho.adminapi.getVariable("CI_Default_Signature");
 lastCheckNum      = zoho.adminapi.getVariable("CI_Last_Check_Number").toLong();
 startingCheckNum  = lastCheckNum + 1000000;
 
+// Reserve the check number range immediately to minimize race condition risk
+// (if two deals close simultaneously, both could read the same lastCheckNum)
+// Tradeoff: a failed API call will skip a range, but that's better than duplicates
+zoho.adminapi.updateVariable("CI_Last_Check_Number", startingCheckNum.toString());
+
 info "CI: Starting check number = " + startingCheckNum;
 
 
@@ -87,7 +107,7 @@ authResponse = invokeurl
     headers: {"Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded"}
 ];
 
-info "CI: Auth response = " + authResponse.toString();
+info "CI: Auth response received";
 
 if (authResponse.get("access_token") == null)
     errorMsg = "Auth failed: " + authResponse.toString();
@@ -130,7 +150,7 @@ addResponse = invokeurl
     headers: {"Authorization": "Bearer " + accessToken}
 ];
 
-info "CI: Add Account response = " + addResponse.toString();
+info "CI: Add Account response status = " + addResponse.get("status");
 
 if (addResponse.get("status") != 1)
     errors = ifnull(addResponse.get("errors"), List());
@@ -156,7 +176,7 @@ listResponse = invokeurl
     headers: {"Authorization": "Bearer " + accessToken}
 ];
 
-info "CI: List Accounts response = " + listResponse.toString();
+info "CI: List Accounts response status = " + listResponse.get("status");
 
 if (listResponse.get("status") != 1)
     errorMsg = "List Accounts failed: " + listResponse.toString();
@@ -176,7 +196,9 @@ foundAccount = false;
 for each accountKey in accounts.keys()
     acct = accounts.get(accountKey);
     acctName = ifnull(acct.get("name"), "");
-    if (acctName == dealName)
+    acctNum = ifnull(acct.get("acct_num"), "");
+    // Match on name, and also verify account number if available
+    if (acctName == dealName && (acctNum == "" || acctNum == bankNumber))
         fundingSourceId = acct.get("id").toString();
         logoId = ifnull(acct.get("logo"), "").toString();
         foundAccount = true;
@@ -198,16 +220,13 @@ end if;
 updateMap = Map();
 updateMap.put("CI_Funding_Source_ID", fundingSourceId);
 updateMap.put("CI_Logo_ID", logoId);
-updateMap.put("CI_Status", "Success");
+updateMap.put("CI_Status", "Success - Account created");
 
 zoho.crm.updateRecord("Deals", dealId, updateMap);
 
 info "CI: Opportunity updated — Funding Source ID: " + fundingSourceId + ", Logo ID: " + logoId;
 
 
-// ========== 9. INCREMENT CI_LAST_CHECK_NUMBER ==============================
+// ========== 9. DONE ========================================================
 
-zoho.adminapi.updateVariable("CI_Last_Check_Number", startingCheckNum.toString());
-
-info "CI: Updated CI_Last_Check_Number to " + startingCheckNum;
 info "CI: Integration complete for deal " + dealId;
