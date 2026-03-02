@@ -1,0 +1,213 @@
+// ============================================================================
+// CI_ADD_ACCOUNT — CheckIssuing Bank Account Provisioning
+// ============================================================================
+//
+// Purpose:  Creates a bank account in CheckIssuing when an Opportunity closes
+//           in Zoho CRM. Retrieves the new account's funding source ID and
+//           logo ID, then stores them back on the Opportunity record.
+//
+// Input:    dealId (String) — Zoho CRM Deal/Opportunity record ID
+//
+// Triggers: 1. Workflow Rule  — fires on Stage = "Closed Won" or "Payment Setup"
+//           2. Custom Button  — manual trigger on the Deal detail page
+//
+// ============================================================================
+
+
+// ========== 1. GUARD: PREVENT DUPLICATE SUBMISSIONS ========================
+
+deal = zoho.crm.getRecordById("Deals", dealId);
+existingFundingId = ifnull(deal.get("CI_Funding_Source_ID"), "");
+
+if (existingFundingId != "")
+    info "CI: Account already exists for this deal. Funding Source ID: " + existingFundingId;
+    return;
+end if;
+
+info "CI: Starting account creation for deal " + dealId;
+
+
+// ========== 2. READ DEAL-SPECIFIC FIELDS ===================================
+
+dealName = deal.get("Deal_Name");
+bankNumber = deal.get("Bank_Number");
+
+info "CI: Deal Name = " + dealName;
+info "CI: Bank Number = " + bankNumber;
+
+// Get parent account billing address
+accountId = deal.get("Account_Name").get("id");
+account = zoho.crm.getRecordById("Accounts", accountId);
+
+street  = ifnull(account.get("Billing_Street"), "");
+city    = ifnull(account.get("Billing_City"), "");
+state   = ifnull(account.get("Billing_State"), "");
+zip     = ifnull(account.get("Billing_Code"), "");
+country = ifnull(account.get("Billing_Country"), "");
+
+addressOnChecks = street + ", " + city + ", " + state + " " + zip;
+if (country != "")
+    addressOnChecks = addressOnChecks + ", " + country;
+end if;
+
+info "CI: Address on checks = " + addressOnChecks;
+
+
+// ========== 3. READ SHARED DEFAULTS FROM ORG VARIABLES =====================
+
+bankName          = zoho.adminapi.getVariable("CI_Bank_Name");
+bankAddr          = zoho.adminapi.getVariable("CI_Bank_Address");
+fractionalRouting = zoho.adminapi.getVariable("CI_Fractional_Routing");
+returnMailTo      = zoho.adminapi.getVariable("CI_Return_MailTo");
+returnAddress     = zoho.adminapi.getVariable("CI_Return_Address");
+voidText          = zoho.adminapi.getVariable("CI_Void_Text");
+defaultSig        = zoho.adminapi.getVariable("CI_Default_Signature");
+lastCheckNum      = zoho.adminapi.getVariable("CI_Last_Check_Number").toLong();
+startingCheckNum  = lastCheckNum + 1000000;
+
+info "CI: Starting check number = " + startingCheckNum;
+
+
+// ========== 4. AUTHENTICATE WITH CHECKISSUING (OAuth2) =====================
+
+apiId     = zoho.adminapi.getVariable("CI_API_ID");
+apiSecret = zoho.adminapi.getVariable("CI_API_Secret");
+baseUrl   = zoho.adminapi.getVariable("CI_Base_URL");
+
+authUrl    = baseUrl + "/api/v1/oauth/token";
+authHeader = "Basic " + zoho.encryption.base64Encode(apiId + ":" + apiSecret);
+
+info "CI: Requesting OAuth token from " + authUrl;
+
+authResponse = invokeurl
+[
+    url: authUrl
+    type: POST
+    parameters: "grant_type=client_credentials"
+    headers: {"Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded"}
+];
+
+info "CI: Auth response = " + authResponse.toString();
+
+if (authResponse.get("access_token") == null)
+    errorMsg = "Auth failed: " + authResponse.toString();
+    info "CI: " + errorMsg;
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    return;
+end if;
+
+accessToken = authResponse.get("access_token");
+info "CI: OAuth token obtained successfully";
+
+
+// ========== 5. CALL ADD BANK ACCOUNT API ===================================
+
+addAccountUrl = baseUrl + "/api/v1/bank-account/add";
+
+addParams = Map();
+addParams.put("name", dealName);
+addParams.put("bank_name", bankName);
+addParams.put("name_on_checks", dealName);
+addParams.put("address_on_checks", addressOnChecks);
+addParams.put("acct_num", bankNumber);
+addParams.put("sig", defaultSig);
+addParams.put("acct_type", "CHECKING");
+addParams.put("bank_addr", bankAddr);
+addParams.put("starting_check_num", startingCheckNum.toString());
+addParams.put("fractional_routing", fractionalRouting);
+addParams.put("return_mailto", returnMailTo);
+addParams.put("return_address", returnAddress);
+addParams.put("is_business", "true");
+addParams.put("void_text", voidText);
+
+info "CI: Calling Add Bank Account at " + addAccountUrl;
+
+addResponse = invokeurl
+[
+    url: addAccountUrl
+    type: POST
+    parameters: addParams
+    headers: {"Authorization": "Bearer " + accessToken}
+];
+
+info "CI: Add Account response = " + addResponse.toString();
+
+if (addResponse.get("status") != 1)
+    errors = ifnull(addResponse.get("errors"), List());
+    errorMsg = "Add Account failed: " + errors.toString();
+    info "CI: " + errorMsg;
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    return;
+end if;
+
+info "CI: Bank account created successfully in CheckIssuing";
+
+
+// ========== 6. CALL LIST BANK ACCOUNTS API =================================
+
+listUrl = baseUrl + "/api/v1/bank-account/list";
+
+info "CI: Calling List Bank Accounts at " + listUrl;
+
+listResponse = invokeurl
+[
+    url: listUrl
+    type: POST
+    headers: {"Authorization": "Bearer " + accessToken}
+];
+
+info "CI: List Accounts response = " + listResponse.toString();
+
+if (listResponse.get("status") != 1)
+    errorMsg = "List Accounts failed: " + listResponse.toString();
+    info "CI: " + errorMsg;
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    return;
+end if;
+
+
+// ========== 7. FIND THE NEWLY CREATED ACCOUNT ==============================
+
+accounts = listResponse.get("accounts");
+fundingSourceId = "";
+logoId = "";
+foundAccount = false;
+
+for each accountKey in accounts.keys()
+    acct = accounts.get(accountKey);
+    acctName = ifnull(acct.get("name"), "");
+    if (acctName == dealName)
+        fundingSourceId = acct.get("id").toString();
+        logoId = ifnull(acct.get("logo"), "").toString();
+        foundAccount = true;
+        info "CI: Found matching account — ID: " + fundingSourceId + ", Logo: " + logoId;
+        break;
+    end if;
+end for;
+
+if (!foundAccount)
+    errorMsg = "Account created but not found in list. Searched for name: " + dealName;
+    info "CI: " + errorMsg;
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    return;
+end if;
+
+
+// ========== 8. UPDATE OPPORTUNITY RECORD ===================================
+
+updateMap = Map();
+updateMap.put("CI_Funding_Source_ID", fundingSourceId);
+updateMap.put("CI_Logo_ID", logoId);
+updateMap.put("CI_Status", "Success");
+
+zoho.crm.updateRecord("Deals", dealId, updateMap);
+
+info "CI: Opportunity updated — Funding Source ID: " + fundingSourceId + ", Logo ID: " + logoId;
+
+
+// ========== 9. INCREMENT CI_LAST_CHECK_NUMBER ==============================
+
+zoho.adminapi.updateVariable("CI_Last_Check_Number", startingCheckNum.toString());
+
+info "CI: Updated CI_Last_Check_Number to " + startingCheckNum;
+info "CI: Integration complete for deal " + dealId;
