@@ -1,19 +1,5 @@
-// ============================================================================
-// CI_ADD_ACCOUNT — CheckIssuing Bank Account Provisioning
-// ============================================================================
-//
-// Purpose:  Creates a bank account in CheckIssuing when an Opportunity closes
-//           in Zoho CRM. Retrieves the new account's funding source ID and
-//           logo ID, then stores them back on the Opportunity record.
-//
-// Input:    dealId (String) — Zoho CRM Deal/Opportunity record ID
-//
-// Triggers: 1. Workflow Rule  — fires on Stage = "Closed Won" or "Payment Setup"
-//           2. Custom Button  — manual trigger on the Deal detail page
-//
-// ============================================================================
-
-
+string standalone.ci_add_account(string dealId)
+{
 // ========== 1. GUARD: PREVENT DUPLICATE SUBMISSIONS ========================
 
 deal = zoho.crm.getRecordById("Deals", dealId);
@@ -21,7 +7,7 @@ existingFundingId = ifnull(deal.get("Funding_Source_ID"), "");
 
 if (existingFundingId != "")
     info "CI: Account already exists for this deal. Funding Source ID: " + existingFundingId;
-    return;
+    return "duplicate";
 end if;
 
 info "CI: Starting account creation for deal " + dealId;
@@ -34,12 +20,12 @@ bankNumber = deal.get("Bank_Number");
 
 if (dealName == null || dealName == "")
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Deal_Name"});
-    return;
+    return "error: missing deal name";
 end if;
 
 if (bankNumber == null || bankNumber == "")
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Bank_Number"});
-    return;
+    return "error: missing bank number";
 end if;
 
 info "CI: Deal Name = " + dealName;
@@ -49,7 +35,7 @@ info "CI: Bank Number = " + bankNumber;
 accountLookup = deal.get("Account_Name");
 if (accountLookup == null)
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Deal has no parent Account"});
-    return;
+    return "error: no parent account";
 end if;
 accountId = accountLookup.get("id");
 account = zoho.crm.getRecordById("Accounts", accountId);
@@ -80,9 +66,6 @@ defaultSig        = zoho.adminapi.getVariable("CI_Default_Signature");
 lastCheckNum      = zoho.adminapi.getVariable("CI_Last_Check_Number").toLong();
 startingCheckNum  = lastCheckNum + 1000000;
 
-// Reserve the check number range immediately to minimize race condition risk
-// (if two deals close simultaneously, both could read the same lastCheckNum)
-// Tradeoff: a failed API call will skip a range, but that's better than duplicates
 zoho.adminapi.updateVariable("CI_Last_Check_Number", startingCheckNum.toString());
 
 info "CI: Starting check number = " + startingCheckNum;
@@ -113,7 +96,7 @@ if (authResponse.get("access_token") == null)
     errorMsg = "Auth failed: " + authResponse.toString();
     info "CI: " + errorMsg;
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
-    return;
+    return "error: auth failed";
 end if;
 
 accessToken = authResponse.get("access_token");
@@ -157,7 +140,7 @@ if (addResponse.get("status") != 1)
     errorMsg = "Add Account failed: " + errors.toString();
     info "CI: " + errorMsg;
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
-    return;
+    return "error: add account failed";
 end if;
 
 info "CI: Bank account created successfully in CheckIssuing";
@@ -182,7 +165,7 @@ if (listResponse.get("status") != 1)
     errorMsg = "List Accounts failed: " + listResponse.toString();
     info "CI: " + errorMsg;
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
-    return;
+    return "error: list accounts failed";
 end if;
 
 
@@ -197,7 +180,6 @@ for each accountKey in accounts.keys()
     acct = accounts.get(accountKey);
     acctName = ifnull(acct.get("name"), "");
     acctNum = ifnull(acct.get("acct_num"), "");
-    // Match on name, and also verify account number if available
     if (acctName == dealName && (acctNum == "" || acctNum == bankNumber))
         fundingSourceId = acct.get("id").toString();
         logoId = ifnull(acct.get("logo"), "").toString();
@@ -211,7 +193,7 @@ if (!foundAccount)
     errorMsg = "Account created but not found in list. Searched for name: " + dealName;
     info "CI: " + errorMsg;
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
-    return;
+    return "error: account not found in list";
 end if;
 
 
@@ -230,3 +212,5 @@ info "CI: Opportunity updated — Funding Source ID: " + fundingSourceId + ", Lo
 // ========== 9. DONE ========================================================
 
 info "CI: Integration complete for deal " + dealId;
+return "success";
+}
