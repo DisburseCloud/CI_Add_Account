@@ -17,7 +17,7 @@
 // ========== 1. GUARD: PREVENT DUPLICATE SUBMISSIONS ========================
 
 deal = zoho.crm.getRecordById("Deals", dealId);
-existingFundingId = ifnull(deal.get("CI_Funding_Source_ID"), "");
+existingFundingId = ifnull(deal.get("Funding_Source_ID"), "");
 
 if (existingFundingId != "")
     info "CI: Account already exists for this deal. Funding Source ID: " + existingFundingId;
@@ -218,8 +218,8 @@ end if;
 // ========== 8. UPDATE OPPORTUNITY RECORD ===================================
 
 updateMap = Map();
-updateMap.put("CI_Funding_Source_ID", fundingSourceId);
-updateMap.put("CI_Logo_ID", logoId);
+updateMap.put("Funding_Source_ID", fundingSourceId);
+updateMap.put("Logo_ID", logoId);
 updateMap.put("CI_Status", "Success - Account created");
 
 zoho.crm.updateRecord("Deals", dealId, updateMap);
