@@ -6,11 +6,8 @@ deal = zoho.crm.getRecordById("Deals", dealId);
 existingFundingId = ifnull(deal.get("Funding_Source_ID"), "");
 
 if (existingFundingId != "")
-    info "CI: Account already exists for this deal. Funding Source ID: " + existingFundingId;
     return "duplicate";
 end if;
-
-info "CI: Starting account creation for deal " + dealId;
 
 
 // ========== 2. READ DEAL-SPECIFIC FIELDS ===================================
@@ -27,9 +24,6 @@ if (bankNumber == null || bankNumber == "")
     zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Bank_Number"});
     return "error: missing bank number";
 end if;
-
-info "CI: Deal Name = " + dealName;
-info "CI: Bank Number = " + bankNumber;
 
 // Get parent account billing address
 accountLookup = deal.get("Account_Name");
@@ -51,8 +45,6 @@ if (country != "")
     addressOnChecks = addressOnChecks + ", " + country;
 end if;
 
-info "CI: Address on checks = " + addressOnChecks;
-
 
 // ========== 3. READ SHARED DEFAULTS FROM ORG VARIABLES =====================
 
@@ -68,8 +60,6 @@ startingCheckNum  = lastCheckNum + 1000000;
 
 zoho.adminapi.updateVariable("CI_Last_Check_Number", startingCheckNum.toString());
 
-info "CI: Starting check number = " + startingCheckNum;
-
 
 // ========== 4. AUTHENTICATE WITH CHECKISSUING (OAuth2) =====================
 
@@ -80,8 +70,6 @@ baseUrl   = zoho.adminapi.getVariable("CI_Base_URL");
 authUrl    = baseUrl + "/api/v1/oauth/token";
 authHeader = "Basic " + zoho.encryption.base64Encode(apiId + ":" + apiSecret);
 
-info "CI: Requesting OAuth token from " + authUrl;
-
 authResponse = invokeurl
 [
     url: authUrl
@@ -90,17 +78,12 @@ authResponse = invokeurl
     headers: {"Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded"}
 ];
 
-info "CI: Auth response received";
-
 if (authResponse.get("access_token") == null)
-    errorMsg = "Auth failed: " + authResponse.toString();
-    info "CI: " + errorMsg;
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Auth failed: " + authResponse.toString()});
     return "error: auth failed";
 end if;
 
 accessToken = authResponse.get("access_token");
-info "CI: OAuth token obtained successfully";
 
 
 // ========== 5. CALL ADD BANK ACCOUNT API ===================================
@@ -123,8 +106,6 @@ addParams.put("return_address", returnAddress);
 addParams.put("is_business", "true");
 addParams.put("void_text", voidText);
 
-info "CI: Calling Add Bank Account at " + addAccountUrl;
-
 addResponse = invokeurl
 [
     url: addAccountUrl
@@ -133,24 +114,16 @@ addResponse = invokeurl
     headers: {"Authorization": "Bearer " + accessToken}
 ];
 
-info "CI: Add Account response status = " + addResponse.get("status");
-
 if (addResponse.get("status") != 1)
     errors = ifnull(addResponse.get("errors"), List());
-    errorMsg = "Add Account failed: " + errors.toString();
-    info "CI: " + errorMsg;
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Add Account failed: " + errors.toString()});
     return "error: add account failed";
 end if;
-
-info "CI: Bank account created successfully in CheckIssuing";
 
 
 // ========== 6. CALL LIST BANK ACCOUNTS API =================================
 
 listUrl = baseUrl + "/api/v1/bank-account/list";
-
-info "CI: Calling List Bank Accounts at " + listUrl;
 
 listResponse = invokeurl
 [
@@ -159,12 +132,8 @@ listResponse = invokeurl
     headers: {"Authorization": "Bearer " + accessToken}
 ];
 
-info "CI: List Accounts response status = " + listResponse.get("status");
-
 if (listResponse.get("status") != 1)
-    errorMsg = "List Accounts failed: " + listResponse.toString();
-    info "CI: " + errorMsg;
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "List Accounts failed: " + listResponse.toString()});
     return "error: list accounts failed";
 end if;
 
@@ -184,15 +153,12 @@ for each accountKey in accounts.keys()
         fundingSourceId = acct.get("id").toString();
         logoId = ifnull(acct.get("logo"), "").toString();
         foundAccount = true;
-        info "CI: Found matching account — ID: " + fundingSourceId + ", Logo: " + logoId;
         break;
     end if;
 end for;
 
 if (!foundAccount)
-    errorMsg = "Account created but not found in list. Searched for name: " + dealName;
-    info "CI: " + errorMsg;
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": errorMsg});
+    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Account created but not found in list. Searched for: " + dealName});
     return "error: account not found in list";
 end if;
 
@@ -206,11 +172,5 @@ updateMap.put("CI_Status", "Success - Account created");
 
 zoho.crm.updateRecord("Deals", dealId, updateMap);
 
-info "CI: Opportunity updated — Funding Source ID: " + fundingSourceId + ", Logo ID: " + logoId;
-
-
-// ========== 9. DONE ========================================================
-
-info "CI: Integration complete for deal " + dealId;
 return "success";
 }
