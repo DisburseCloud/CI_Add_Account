@@ -3,27 +3,31 @@ string standalone.ci_add_account(string dealId)
 deal = zoho.crm.getRecordById("Deals", dealId);
 existingFundingId = ifnull(deal.get("Funding_Source_ID"), "");
 if (existingFundingId != "")
-    retVal = "duplicate";
-    return retVal;
-end if;
+{
+	retVal = "duplicate";
+	return retVal;
+}
 dealName = deal.get("Deal_Name");
 bankNumber = deal.get("Bank_Number");
 if (dealName == null || dealName == "")
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Deal_Name"});
-    retVal = "error: missing deal name";
-    return retVal;
-end if;
+{
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Deal_Name"});
+	retVal = "error: missing deal name";
+	return retVal;
+}
 if (bankNumber == null || bankNumber == "")
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Bank_Number"});
-    retVal = "error: missing bank number";
-    return retVal;
-end if;
+{
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Missing Bank_Number"});
+	retVal = "error: missing bank number";
+	return retVal;
+}
 accountLookup = deal.get("Account_Name");
 if (accountLookup == null)
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Deal has no parent Account"});
-    retVal = "error: no parent account";
-    return retVal;
-end if;
+{
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Deal has no parent Account"});
+	retVal = "error: no parent account";
+	return retVal;
+}
 accountId = accountLookup.get("id");
 account = zoho.crm.getRecordById("Accounts", accountId);
 street = ifnull(account.get("Billing_Street"), "");
@@ -33,35 +37,40 @@ zip = ifnull(account.get("Billing_Code"), "");
 country = ifnull(account.get("Billing_Country"), "");
 addressOnChecks = street + ", " + city + ", " + state + " " + zip;
 if (country != "")
-    addressOnChecks = addressOnChecks + ", " + country;
-end if;
-bankName = zoho.adminapi.getVariable("CI_Bank_Name");
-bankAddr = zoho.adminapi.getVariable("CI_Bank_Address");
-fractionalRouting = zoho.adminapi.getVariable("CI_Fractional_Routing");
-returnMailTo = zoho.adminapi.getVariable("CI_Return_MailTo");
-returnAddress = zoho.adminapi.getVariable("CI_Return_Address");
-voidText = zoho.adminapi.getVariable("CI_Void_Text");
-defaultSig = zoho.adminapi.getVariable("CI_Default_Signature");
-lastCheckNum = zoho.adminapi.getVariable("CI_Last_Check_Number").toLong();
+{
+	addressOnChecks = addressOnChecks + ", " + country;
+}
+bankName = zoho.crm.getOrgVariable("CI_Bank_Name");
+bankAddr = zoho.crm.getOrgVariable("CI_Bank_Address");
+fractionalRouting = zoho.crm.getOrgVariable("CI_Fractional_Routing");
+returnMailTo = zoho.crm.getOrgVariable("CI_Return_MailTo");
+returnAddress = zoho.crm.getOrgVariable("CI_Return_Address");
+voidText = zoho.crm.getOrgVariable("CI_Void_Text");
+defaultSig = zoho.crm.getOrgVariable("CI_Default_Signature");
+lastCheckNum = zoho.crm.getOrgVariable("CI_Last_Check_Number").toLong();
 startingCheckNum = lastCheckNum + 1000000;
-zoho.adminapi.updateVariable("CI_Last_Check_Number", startingCheckNum.toString());
-apiId = zoho.adminapi.getVariable("CI_API_ID");
-apiSecret = zoho.adminapi.getVariable("CI_API_Secret");
-baseUrl = zoho.adminapi.getVariable("CI_Base_URL");
+checkNumMap = Map();
+checkNumMap.put("apiname", "CI_Last_Check_Number");
+checkNumMap.put("value", startingCheckNum.toString());
+zoho.crm.invokeConnector("crm.set", checkNumMap);
+apiId = zoho.crm.getOrgVariable("CI_API_ID");
+apiSecret = zoho.crm.getOrgVariable("CI_API_Secret");
+baseUrl = zoho.crm.getOrgVariable("CI_Base_URL");
 authUrl = baseUrl + "/api/v1/oauth/token";
 authHeader = "Basic " + zoho.encryption.base64Encode(apiId + ":" + apiSecret);
 authResponse = invokeurl
 [
-    url: authUrl
-    type: POST
-    parameters: "grant_type=client_credentials"
-    headers: {"Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded"}
+	url: authUrl
+	type: POST
+	parameters: "grant_type=client_credentials"
+	headers: {"Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded"}
 ];
 if (authResponse.get("access_token") == null)
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Auth failed: " + authResponse.toString()});
-    retVal = "error: auth failed";
-    return retVal;
-end if;
+{
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Auth failed"});
+	retVal = "error: auth failed";
+	return retVal;
+}
 accessToken = authResponse.get("access_token");
 addAccountUrl = baseUrl + "/api/v1/bank-account/add";
 addParams = Map();
@@ -81,49 +90,54 @@ addParams.put("is_business", "true");
 addParams.put("void_text", voidText);
 addResponse = invokeurl
 [
-    url: addAccountUrl
-    type: POST
-    parameters: addParams
-    headers: {"Authorization": "Bearer " + accessToken}
+	url: addAccountUrl
+	type: POST
+	parameters: addParams
+	headers: {"Authorization": "Bearer " + accessToken}
 ];
 if (addResponse.get("status") != 1)
-    errors = ifnull(addResponse.get("errors"), List());
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Add Account failed: " + errors.toString()});
-    retVal = "error: add account failed";
-    return retVal;
-end if;
+{
+	errors = ifnull(addResponse.get("errors"), List());
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Add Account failed: " + errors.toString()});
+	retVal = "error: add account failed";
+	return retVal;
+}
 listUrl = baseUrl + "/api/v1/bank-account/list";
 listResponse = invokeurl
 [
-    url: listUrl
-    type: POST
-    headers: {"Authorization": "Bearer " + accessToken}
+	url: listUrl
+	type: POST
+	headers: {"Authorization": "Bearer " + accessToken}
 ];
 if (listResponse.get("status") != 1)
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "List Accounts failed: " + listResponse.toString()});
-    retVal = "error: list accounts failed";
-    return retVal;
-end if;
+{
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "List Accounts failed"});
+	retVal = "error: list accounts failed";
+	return retVal;
+}
 accounts = listResponse.get("accounts");
 fundingSourceId = "";
 logoId = "";
 foundAccount = false;
-for each accountKey in accounts.keys()
-    acct = accounts.get(accountKey);
-    acctName = ifnull(acct.get("name"), "");
-    acctNum = ifnull(acct.get("acct_num"), "");
-    if (acctName == dealName && (acctNum == "" || acctNum == bankNumber))
-        fundingSourceId = acct.get("id").toString();
-        logoId = ifnull(acct.get("logo"), "").toString();
-        foundAccount = true;
-        break;
-    end if;
-end for;
+for each  accountKey in accounts.keys()
+{
+	acct = accounts.get(accountKey);
+	acctName = ifnull(acct.get("name"), "");
+	acctNum = ifnull(acct.get("acct_num"), "");
+	if (acctName == dealName && (acctNum == "" || acctNum == bankNumber))
+	{
+		fundingSourceId = acct.get("id").toString();
+		logoId = ifnull(acct.get("logo"), "").toString();
+		foundAccount = true;
+		break;
+	}
+}
 if (!foundAccount)
-    zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Account created but not found in list. Searched for: " + dealName});
-    retVal = "error: account not found in list";
-    return retVal;
-end if;
+{
+	zoho.crm.updateRecord("Deals", dealId, {"CI_Status": "Account created but not found in list"});
+	retVal = "error: account not found in list";
+	return retVal;
+}
 updateMap = Map();
 updateMap.put("Funding_Source_ID", fundingSourceId);
 updateMap.put("Logo_ID", logoId);
